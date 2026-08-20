@@ -2,11 +2,12 @@
 
 Dark, high-contrast plates in the same visual language as the rest of the
 deck they get pasted into: near-black ground, a bone display face for the
-numbers that matter, mono for data. Bars are colored by their own risk —
-mint below the coin-flip point, amber into the commit zone, coral past
-it — the same read-the-color-not-just-the-axis idea a distribution strip
-on a slide would use. The functions return figures; saving is the
-caller's business.
+numbers that matter, mono for data. Bars are colored by whether they sit
+in a reasonable range, not by an escalating-danger scale: gray below the
+40th percentile (a plan that size is overconfident) and gray again past
+P95 (padding nobody asked for), with a green ramp in between that deepens
+toward P85 — the buffer worth taking to a manager. The functions return
+figures; saving is the caller's business.
 """
 import io
 import logging
@@ -34,16 +35,18 @@ INK_2 = "#121826"     # a touch lighter, for the resting (below-P50) bars
 BONE = "#EDE7DA"      # primary text and the S-curve line
 BONE_DIM = "#8A8375"  # ticks, axis captions — quiet on purpose
 
-# Status colors, reused from the app's own vocabulary (ON TIME / BOARDING /
-# FINAL CALL) but pulled from the deck's saturated palette so a chart
-# pasted next to those slides reads as the same document.
-MINT = "#4ECBA5"      # ON TIME — below the coin-flip point
-AMBER = "#E9A33C"     # BOARDING — the commit zone
-CORAL = "#E85A48"     # FINAL CALL — past it, into the tail
-VIOLET = "#A78BFA"    # PLAN — the number being interrogated, not a risk tier
+# Status colors. Gray reads as "outside the range worth discussing" in
+# either direction; green is reserved for the one number worth acting
+# on. Neither is the app's brand accent (that stays orange, for chrome
+# only) — status color here means confidence, nothing else.
+GRAY = "#5B6773"        # P50 and P95 — same neutral, both ends of the range
+GREEN_LOW = "#2F6E5C"   # start of the ramp, just past P40
+GREEN_PEAK = "#4ECBA5"  # P85 — the recommended buffer
+GREEN_FADE = "#3A8F76"  # easing back toward gray between P85 and P95
+VIOLET = "#A78BFA"      # PLAN — the number being interrogated, not a risk tier
 
-LEVEL_COLORS = {50: MINT, 85: AMBER, 95: CORAL}
-LEVEL_STATUS = {50: "ON TIME", 85: "BOARDING", 95: "FINAL CALL"}
+LEVEL_COLORS = {50: GRAY, 85: GREEN_PEAK, 95: GRAY}
+LEVEL_STATUS = {85: "RECOMMENDED"}  # 50 and 95 get no status word, just their P-level
 BASELINE_COLOR = VIOLET
 
 # All three are actually installed for this build; DejaVu is the safety net
@@ -53,11 +56,36 @@ MONO_STACK = ["Geist Mono", "IBM Plex Mono", "PT Mono", "DejaVu Sans Mono", "mon
 
 
 def _level_color(level: int) -> str:
-    return LEVEL_COLORS.get(level, MINT)
+    return LEVEL_COLORS.get(level, GRAY)
 
 
-def _level_status(level: int) -> str:
-    return LEVEL_STATUS.get(level, "P{0}".format(level))
+def _level_tag(level: int) -> str:
+    """The short label drawn on a percentile line: just its P-level, or
+    "STATUS · P-level" for the one level worth flagging."""
+    status = LEVEL_STATUS.get(level)
+    if status:
+        return "{0} · P{1}".format(status, level)
+    return "P{0}".format(level)
+
+
+def _lerp_hex(color_a: str, color_b: str, t: float) -> str:
+    """Blend two ``#rrggbb`` colors, clamping t to [0, 1]."""
+    t = min(max(t, 0.0), 1.0)
+    a = tuple(int(color_a[i:i + 2], 16) for i in (1, 3, 5))
+    b = tuple(int(color_b[i:i + 2], 16) for i in (1, 3, 5))
+    mixed = tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
+    return "#{0:02x}{1:02x}{2:02x}".format(*mixed)
+
+
+def _zone_color(value: float, p40: float, p85: float, p95: float) -> str:
+    """Gray outside [P40, P95]; a green ramp peaking at P85 inside it."""
+    if value < p40 or value > p95:
+        return GRAY
+    if value <= p85:
+        span = max(p85 - p40, 1e-9)
+        return _lerp_hex(GREEN_LOW, GREEN_PEAK, (value - p40) / span)
+    span = max(p95 - p85, 1e-9)
+    return _lerp_hex(GREEN_PEAK, GREEN_FADE, (value - p85) / span)
 
 
 def _style(axes) -> None:
@@ -216,24 +244,26 @@ def _place_curve_labels(
 
 
 def _draw_risk_bars(
-    axes, totals: np.ndarray, p50: Optional[float], p85: Optional[float]
+    axes, totals: np.ndarray, p85: Optional[float], p95: Optional[float]
 ) -> None:
-    """Color each bar by the risk of landing there, not by one flat tone.
+    """Color each bar by whether it falls in the range worth trusting.
 
-    Below the coin-flip point is mint, the commit zone up to P85 is amber,
-    and the tail past it is coral — the same idea a distribution strip on
-    a slide uses, so the shape argues the point before anyone reads a
-    number off the axis.
+    Below P40 is gray — a plan that size is overconfident, not "on track".
+    From there a green ramp deepens toward P85, the buffer worth defending
+    to a manager, then eases back down through P95, past which it's gray
+    again: technically safer, but padding nobody asked for. P40 is derived
+    straight from ``totals`` since it isn't one of the levels the rest of
+    the app tracks.
     """
     counts, edges = np.histogram(totals, bins=60)
     centers = (edges[:-1] + edges[1:]) / 2.0
     width = edges[1:] - edges[:-1]
 
-    if p50 is None or p85 is None:
-        colors = [MINT] * len(centers)
+    if p85 is None or p95 is None:
+        colors = [GREEN_PEAK] * len(centers)
     else:
-        colors = [CORAL if c >= p85 else AMBER if c >= p50 else MINT
-                 for c in centers]
+        p40 = float(np.percentile(totals, 40))
+        colors = [_zone_color(c, p40, p85, p95) for c in centers]
 
     axes.bar(centers, counts, width=width * 0.96, color=colors,
              edgecolor=INK, linewidth=0.6)
@@ -258,7 +288,7 @@ def histogram(
     figure = Figure(figsize=FIGSIZE, dpi=DPI)
     axes = figure.subplots()
 
-    _draw_risk_bars(axes, totals, pctls.get(50), pctls.get(85))
+    _draw_risk_bars(axes, totals, pctls.get(85), pctls.get(95))
     _style(axes)
     axes.set_yticks([])
     axes.set_xlabel("TOTAL PROJECT DURATION, {0}".format(unit_label.upper()),
@@ -278,7 +308,7 @@ def histogram(
         value = pctls[level]
         axes.axvline(value, color=_level_color(level), linewidth=1.8)
         items.append((value, _level_color(level),
-                     ["{0} · P{1}".format(_level_status(level), level),
+                     [_level_tag(level),
                       "{0:.0f} {1}".format(value, unit_label).upper()]))
 
     max_row = _place_labels(figure, axes, items)
@@ -313,12 +343,16 @@ def s_curve(
     probability = np.arange(1, ordered.size + 1) / ordered.size * 100.0
     axes.plot(ordered, probability, color=BONE, linewidth=2.2, zorder=4)
 
-    p50, p85 = pctls.get(50), pctls.get(85)
-    if p50 is not None and p85 is not None:
-        below = ordered < p50
-        middle = (ordered >= p50) & (ordered < p85)
-        above = ordered >= p85
-        for mask, color in ((below, MINT), (middle, AMBER), (above, CORAL)):
+    p85, p95 = pctls.get(85), pctls.get(95)
+    if p85 is not None and p95 is not None:
+        p40 = float(np.percentile(ordered, 40))
+        below = ordered < p40
+        ramp_up = (ordered >= p40) & (ordered < p85)
+        ramp_down = (ordered >= p85) & (ordered < p95)
+        above = ordered >= p95
+        zones = ((below, GRAY), (ramp_up, GREEN_PEAK),
+                 (ramp_down, GREEN_FADE), (above, GRAY))
+        for mask, color in zones:
             axes.fill_between(ordered, probability, where=mask, color=color,
                               alpha=0.16, interpolate=True)
     else:
@@ -340,7 +374,7 @@ def s_curve(
                   linewidth=0.9, linestyle=(0, (2, 3)))
         axes.plot([value], [level], marker="o", markersize=8, color=color,
                   markerfacecolor=INK, markeredgewidth=2.4, zorder=5)
-        lines = ["{0} · P{1}".format(_level_status(level), level),
+        lines = [_level_tag(level),
                  "{0:.0f} {1}".format(value, unit_label).upper()]
         if date_labels and level in date_labels:
             lines.append(date_labels[level].upper())

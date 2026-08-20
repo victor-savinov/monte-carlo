@@ -31,15 +31,17 @@ PAPER = "#EDEFEF"
 SURFACE = "#FFFFFF"
 INK = "#10151D"
 INK_SOFT = "#5B6773"
-ONTIME = "#35506B"
-BOARDING = "#D98A2B"
-FINALCALL = "#B8432E"
-PLAN = "#8B5E52"
+BOARDING = "#D98A2B"       # brand accent — masthead/button chrome, not a risk color
+RECOMMENDED = "#4ECBA5"    # matches charts.GREEN_PEAK — the one tier worth acting on
 
+# Plain-language read of each tier instead of a green/amber/red "how scared
+# should I be" scale: P50 and P95 share the same neutral gray (both sit
+# outside the range worth defending, just in opposite directions), and only
+# P85 gets an accent color and a badge.
 LEVEL_STYLE = {
-    50: ("ON TIME", ONTIME),
-    85: ("BOARDING", BOARDING),
-    95: ("FINAL CALL", FINALCALL),
+    50: ("High risk of missing the deadline", INK_SOFT),
+    85: ("Reliable buffer", RECOMMENDED),
+    95: ("Overly conservative estimate", INK_SOFT),
 }
 
 
@@ -162,7 +164,7 @@ def inject_style():
         /* ---- board rows: the signature result display ---- */
         .board-row {{
             display: grid;
-            grid-template-columns: 130px 1fr auto;
+            grid-template-columns: 1fr auto auto;
             align-items: center;
             gap: 18px;
             background: {board};
@@ -175,8 +177,7 @@ def inject_style():
             font-family: 'Archivo Expanded', sans-serif;
             font-weight: 800;
             font-size: 0.92rem;
-            letter-spacing: 0.05em;
-            text-transform: uppercase;
+            letter-spacing: 0.02em;
         }}
         .board-row__level {{
             font-family: 'IBM Plex Mono', 'PT Mono', monospace;
@@ -184,6 +185,19 @@ def inject_style():
             color: #9FB0BC;
             text-transform: uppercase;
             letter-spacing: 0.04em;
+            margin-top: 3px;
+        }}
+        .board-row__badge {{
+            font-family: 'IBM Plex Mono', 'PT Mono', monospace;
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.07em;
+            text-transform: uppercase;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: rgba(78, 203, 165, 0.16);
+            color: {recommended};
+            white-space: nowrap;
         }}
         .board-row__value {{
             font-family: 'IBM Plex Mono', 'PT Mono', monospace;
@@ -202,7 +216,7 @@ def inject_style():
         }}
         </style>
         """.format(board=BOARD, boardline=BOARD_LINE, paper=PAPER, ink=INK,
-                  inksoft=INK_SOFT, boarding=BOARDING),
+                  inksoft=INK_SOFT, boarding=BOARDING, recommended=RECOMMENDED),
         unsafe_allow_html=True,
     )
 
@@ -228,21 +242,33 @@ def render_masthead():
 def render_board_rows(pctls, date_labels, unit_label):
     """The three confidence tiers, styled as rows on a departures board.
 
+    Each row spells out what its P-level actually means — "P85" alone
+    tells a reader nothing — and only the recommended tier (P85) carries
+    a badge, so the eye lands on the one number worth taking to a manager
+    instead of three equally-weighted options.
+
     See render_masthead's note: every row is assembled on one line so
     joining several of them can never introduce a blank-line break.
     """
     rows = []
     for level in sorted(pctls):
-        status, color = LEVEL_STYLE.get(level, ("P{0}".format(level), ONTIME))
+        status, color = LEVEL_STYLE.get(
+            level, ("P{0}".format(level), INK_SOFT))
+        badge = ('<div class="board-row__badge">Recommended</div>'
+                 if level == 85 else '<div></div>')
         rows.append(
             '<div class="board-row" style="border-left: 4px solid {color}">'
-            '<div class="board-row__status" style="color: {color}">{status}</div>'
-            '<div class="board-row__level">P{level}</div>'
+            '<div><div class="board-row__status" style="color: {color}">'
+            '{status}</div>'
+            '<div class="board-row__level">P{level} &middot; {level}% likely'
+            '</div></div>'
+            '{badge}'
             '<div><div class="board-row__value" style="color: {color}">'
             '{value:.0f} <span style="font-size:0.95rem">{unit}</span></div>'
             '<div class="board-row__date">{date}</div></div>'
             '</div>'.format(color=color, status=status, level=level,
-                            value=pctls[level], unit=unit_label.upper(),
+                            badge=badge, value=pctls[level],
+                            unit=unit_label.upper(),
                             date=date_labels[level].upper())
         )
     st.markdown('<div>' + "".join(rows) + '</div>', unsafe_allow_html=True)
@@ -330,9 +356,12 @@ def show_results(totals, settings, baseline_days, unit_label, prepared):
     plan_date = dates.to_date(baseline_days, settings["start"],
                               settings["days_per_week"])
     st.info(
-        "Your plan of {0:.0f} {1} lands on {2} and succeeds in {3:.0f}% of "
-        "runs.".format(baseline_days, unit_label,
-                       plan_date.strftime("%d %b %Y"), plan_probability)
+        "Your plan of {0:.0f} {1} lands on {2} — that's close to a coin "
+        "flip, succeeding in {3:.0f}% of runs. {4:.0f} {1} (landing on {5}) "
+        "gives a reliable buffer at 85% likely, without tipping into an "
+        "overly conservative estimate.".format(
+            baseline_days, unit_label, plan_date.strftime("%d %b %Y"),
+            plan_probability, pctls[85], date_labels[85])
     )
 
     if settings["target"]:
