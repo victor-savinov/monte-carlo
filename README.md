@@ -7,6 +7,8 @@ a coin-flip chance of being met — often much worse. This tool simulates the
 project 10,000 times and reports the duration you would hit in 50%, 85% and
 95% of those runs, with charts built for a management deck.
 
+It is hosted on https://monte-carlo-project-schedule-estimator.streamlit.app/
+
 ## Install
 
 ```bash
